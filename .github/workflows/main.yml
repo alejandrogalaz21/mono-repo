@@ -1,0 +1,120 @@
+name: Main Workflow
+
+on:
+  pull_request:
+    branches:
+      - main
+  # push:
+  #   branches:
+  #     - main
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to Docker Hub - To Build and Push Images
+        uses: docker/login-action@v3
+        with:
+          username: ${{secrets.DOCKERHUB_USERNAME}}
+          password: ${{secrets.DOCKERHUB_TOKEN}}
+
+      - name: Build and push register API
+        uses: docker/build-push-action@v3
+        with:
+          context: ./server
+          push: true
+          file: ./server/Dockerfile
+          tags: ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:api-latest
+      
+      - name: Build and push register app
+        uses: docker/build-push-action@v3
+        with:
+          context: ./app
+          push: true
+          file: ./app/Dockerfile
+          tags: ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:app-latest
+      
+      - name: Build and push register web
+        uses: docker/build-push-action@v3
+        with:
+          context: ./web
+          push: true
+          file: ./web/Dockerfile
+          tags: ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:web-latest
+
+  push:
+    runs-on: self-hosted
+    needs: build
+    steps:      
+      - uses: actions/checkout@v3
+      - name: Stop and remove existing containers
+        run: |
+          docker stop api || true
+          docker rm api || true
+          docker stop web || true
+          docker rm web || true
+          docker stop app || true
+          docker rm app || true
+
+      - name: Login to Docker Hub - To Build and Push Images
+        uses: docker/login-action@v3
+        with:
+          username: ${{secrets.DOCKERHUB_USERNAME}}
+          password: ${{secrets.DOCKERHUB_TOKEN}}
+      
+      - name: Docker Pull api image
+        run: docker pull ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:api-latest
+
+      - name: Run Docker api container 
+        run: |
+          docker run -d \
+            --name api \
+            --restart always \
+            -p 3000:3000 \
+            -e NODE_ENV=production \
+            -e DB_HOST=mysql \
+            -e DB_PORT=3306 \
+            -e MYSQL_USER=root \
+            -e MYSQL_PASSWORD="${{secrets.DB_PASSWORD}}" \
+            -e MYSQL_ROOT_PASSWORD="${{secrets.DB_PASSWORD}}" \
+            -e MYSQL_DATABASE="blackzone" \
+            -e WEB_PORT="3000" \
+            -e VIRTUAL_HOST="api.${{secrets.DOMAIN}}" \
+            -e LETSENCRYPT_HOST="api.${{secrets.DOMAIN}}" \
+            --network npm \
+            ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:api-latest
+
+      - name: Pull image web
+        run: docker pull ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:web-latest
+
+      - name: Run Docker container web
+        run: |
+          docker run -d \
+            --name web \
+            --restart always \
+            -p 8081:80 \
+            -e VITE_WEB_PORT="80" \
+            -e VIRTUAL_HOST="${{secrets.DOMAIN}}" \
+            -e LETSENCRYPT_HOST="${{secrets.DOMAIN}}" \
+            --network npm \
+            ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:web-latest
+
+      - name: Pull image app
+        run: docker pull ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:app-latest
+
+      - name: Run Docker container app
+        run: |
+          docker run -d \
+            --name app \
+            --restart always \
+            -p 8080:80 \
+            -e VIRTUAL_HOST="admin.${{secrets.DOMAIN}}" \
+            -e LETSENCRYPT_HOST="admin.${{secrets.DOMAIN}}" \
+            --network npm \
+            ${{secrets.DOCKERHUB_USERNAME}}/${{secrets.DOCKERHUB_REPO}}:app-latest
+
+      
